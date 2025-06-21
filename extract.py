@@ -100,6 +100,12 @@ class PatientDataExtractor:
             print("Failed to fetch patient actions")
             return []
         
+    def update_bearer_token(self, new_token: str):
+        """Update the bearer token and headers"""
+        self.bearer_token = new_token
+        self.headers['Authorization'] = f'Bearer {new_token}'
+        print("✅ Bearer token updated successfully!")
+
     def make_request_with_retry(self, method: str, url: str, **kwargs) -> Optional[requests.Response]:
         """Make HTTP request with retry logic and rate limiting"""
         for attempt in range(self.max_retries):
@@ -113,6 +119,41 @@ class PatientDataExtractor:
                 else:
                     response = requests.get(url, **kwargs)
                 
+                # Check for authentication error
+                if response.status_code == 401:
+                    print("\n🚨 AUTHENTICATION ERROR (401 Unauthorized)")
+                    print("Your bearer token appears to be invalid or expired.")
+                    print("Please provide a new bearer token to continue.\n")
+                    
+                    try:
+                        new_token = get_bearer_token(is_retry=True)
+                        self.update_bearer_token(new_token)
+                        
+                        # Update the headers in the current request kwargs
+                        if 'headers' in kwargs:
+                            kwargs['headers']['Authorization'] = f'Bearer {new_token}'
+                        else:
+                            kwargs['headers'] = self.headers
+                        
+                        print("🔄 Retrying request with new token...")
+                        # Retry the request immediately with the new token
+                        if method.upper() == 'POST':
+                            response = requests.post(url, **kwargs)
+                        else:
+                            response = requests.get(url, **kwargs)
+                        
+                        # Check if the new token works
+                        if response.status_code == 401:
+                            print("❌ New token is also invalid. Please check your credentials.")
+                            return None
+                        
+                    except KeyboardInterrupt:
+                        print("\n❌ Token update cancelled by user.")
+                        return None
+                    except Exception as e:
+                        print(f"❌ Error updating token: {e}")
+                        return None
+                
                 # Check for rate limiting response
                 if response.status_code == 429:  # Too Many Requests
                     retry_after = int(response.headers.get('Retry-After', 5))
@@ -124,6 +165,32 @@ class PatientDataExtractor:
                 return response
                 
             except requests.exceptions.RequestException as e:
+                # Check if it's a 401 error that wasn't caught above
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 401:
+                    print("\n🚨 AUTHENTICATION ERROR (401 Unauthorized)")
+                    print("Your bearer token appears to be invalid or expired.")
+                    print("Please provide a new bearer token to continue.\n")
+                    
+                    try:
+                        new_token = get_bearer_token(is_retry=True)
+                        self.update_bearer_token(new_token)
+                        
+                        # Update the headers in the current request kwargs
+                        if 'headers' in kwargs:
+                            kwargs['headers']['Authorization'] = f'Bearer {new_token}'
+                        else:
+                            kwargs['headers'] = self.headers
+                        
+                        print("🔄 Retrying request with new token...")
+                        continue  # Retry with new token
+                        
+                    except KeyboardInterrupt:
+                        print("\n❌ Token update cancelled by user.")
+                        return None
+                    except Exception as token_error:
+                        print(f"❌ Error updating token: {token_error}")
+                        return None
+                
                 print(f"Request failed (attempt {attempt + 1}/{self.max_retries}): {e}")
                 if attempt < self.max_retries - 1:
                     # Exponential backoff
@@ -432,19 +499,26 @@ class PatientDataExtractor:
             writer.writeheader()
             writer.writerows(patient_data)
 
-def get_bearer_token() -> str:
+def get_bearer_token(is_retry: bool = False) -> str:
     """
     Securely prompt for bearer token
     """
-    print("🔐 Bearer Token Authentication")
-    print("-" * 40)
-    print("Please enter your bearer token for API authentication.")
+    if is_retry:
+        print("🔐 Bearer Token Re-Authentication")
+        print("-" * 40)
+        print("Please enter a new/updated bearer token.")
+    else:
+        print("🔐 Bearer Token Authentication")
+        print("-" * 40)
+        print("Please enter your bearer token for API authentication.")
+    
     print("Note: Your input will be hidden for security.")
     print()
     
     while True:
         # Use getpass for secure input (hides the token)
-        token = getpass.getpass("Enter Bearer Token: ").strip()
+        prompt = "Enter New Bearer Token: " if is_retry else "Enter Bearer Token: "
+        token = getpass.getpass(prompt).strip()
         
         if not token:
             print("❌ Bearer token cannot be empty. Please try again.\n")
