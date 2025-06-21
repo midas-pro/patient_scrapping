@@ -8,6 +8,7 @@ import threading
 from datetime import datetime, timedelta
 import random
 import os
+import getpass
 
 class RateLimiter:
     """Thread-safe rate limiter with randomized delays to appear more human-like"""
@@ -431,88 +432,97 @@ class PatientDataExtractor:
             writer.writeheader()
             writer.writerows(patient_data)
 
-def main():
-    # Your bearer token
-    BEARER_TOKEN = "eyJraWQiOiJxZlVBMlE0bHRyd1JXMVppVUdMQXVKXC9QTWhPVlZZYXFydFJ0bmJreDladz0iLCJhbGciOiJSUzI1NiJ9.eyJhdF9oYXNoIjoia1NpMXhWTDJpc21pb0ZnNlB5Q3VVdyIsImN1c3RvbTplbXBsb3llZVBrIjoiMzA5NSIsInN1YiI6IjM3YmJmNDQ2LWM3MjItNDg0OS05ZDU1LTQzZTY4YzExZDE0YiIsImNvZ25pdG86Z3JvdXBzIjpbInBhcnRuZXItZHItc21pbGUiXSwiZW1haWxfdmVyaWZpZWQiOmZhbHNlLCJjdXN0b206ZW1wbG95ZWVVdWlkIjoiMzJiZmQ3YzgtN2I2Zi00ZmJlLTljYzItZDFjYzRlZmExYjY3IiwiaXNzIjoiaHR0cHM6XC9cL2NvZ25pdG8taWRwLmV1LWNlbnRyYWwtMS5hbWF6b25hd3MuY29tXC9ldS1jZW50cmFsLTFfVjBtc1RLNWhQIiwiZW1wbG95ZWVQayI6IjMwOTUiLCJjdXN0b206Y29tcGFueUlkIjoiY2Q4ZWNlY2MtMTBmNS00YmU3LTljZmMtZWM2OTdlZDJiNjMwIiwiY29nbml0bzp1c2VybmFtZSI6IjM3YmJmNDQ2LWM3MjItNDg0OS05ZDU1LTQzZTY4YzExZDE0YiIsImF1ZCI6IjN0bzdjNG1saWtta2MxdTk0Mm9oMHZlNGw4IiwiY29tcGFueUlkIjoiY2Q4ZWNlY2MtMTBmNS00YmU3LTljZmMtZWM2OTdlZDJiNjMwIiwiaWRlbnRpdGllcyI6W3sidXNlcklkIjoiMTEzMDYyMjYyNjg1MTU5MTU1NTkxIiwicHJvdmlkZXJOYW1lIjoiR29vZ2xlIiwicHJvdmlkZXJUeXBlIjoiR29vZ2xlIiwiaXNzdWVyIjpudWxsLCJwcmltYXJ5IjoiZmFsc2UiLCJkYXRlQ3JlYXRlZCI6IjE3NDEyNTMzOTAzOTIifV0sImVtcGxveWVlVXVpZCI6IjMyYmZkN2M4LTdiNmYtNGZiZS05Y2MyLWQxY2M0ZWZhMWI2NyIsInRva2VuX3VzZSI6ImlkIiwiYXV0aF90aW1lIjoxNzUwNDI1NzIwLCJleHAiOjE3NTA0NDgxMzEsImlhdCI6MTc1MDQ0NDUzMSwiZW1haWwiOiJjYWJpbmV0ZG9jdGV1cmhhZGRhZEBnbWFpbC5jb20ifQ.GYhLiAzXnv006DSMAuKOTf3W7Lbfd_9rQ7YcbIrPL4u3Gc_dibaQ0cUJtbuLY7mY5NmLRw57lSyVFK594pSNHY5aLR3wKuwSK0gMvirZxA5QLNruq4rf_ERYsy2uCKHW6wOPWzxD2uBzBBaPHjjfW6wy5SoVYlZaYxBJRKs0ZWD5L94rKOSwIWsnhsp0z3GgtfeLhhg-5w0XEDF2KilNZ2gzlRYwQ_GClJ35CRwm0nDepmCB6lpihB_3IzQYMuoZAaAoEZW58CY2WwINXf4_-NQ9fl1zrRpnjM7dB4klrYQcp27CQCUU07oY1kQKb9wdNaKcG6FaVuUbVc3BpChEmw"
+def get_bearer_token() -> str:
+    """
+    Securely prompt for bearer token
+    """
+    print("🔐 Bearer Token Authentication")
+    print("-" * 40)
+    print("Please enter your bearer token for API authentication.")
+    print("Note: Your input will be hidden for security.")
+    print()
     
-    print("🎯 ANTI-DDOS PATIENT DATA EXTRACTOR")
+    while True:
+        # Use getpass for secure input (hides the token)
+        token = getpass.getpass("Enter Bearer Token: ").strip()
+        
+        if not token:
+            print("❌ Bearer token cannot be empty. Please try again.\n")
+            continue
+        
+        # Basic validation - check if it looks like a JWT token
+        if token.count('.') == 2:
+            print("✅ Token format appears valid.")
+            return token
+        else:
+            print("⚠️  Warning: Token doesn't appear to be in JWT format.")
+            confirm = input("Continue anyway? (y/n): ").lower().strip()
+            if confirm in ['y', 'yes']:
+                return token
+            print()
+
+def main():
+    print("🎯 SECURE PATIENT DATA EXTRACTOR")
     print("=" * 50)
     print("This script is designed to be server-friendly:")
+    print("✅ Secure token input (hidden from terminal)")
     print("✅ Saves all customer IDs first before processing")
     print("✅ Uses human-like randomized delays")
     print("✅ Automatic progress checkpoints")
     print("✅ Resume capability if interrupted")
     print("✅ Ultra-conservative rate limiting")
     print("=" * 50)
+    print()
+    
+    # Get bearer token securely
+    try:
+        bearer_token = get_bearer_token()
+        print("\n🚀 Starting extraction process...\n")
+    except KeyboardInterrupt:
+        print("\n\n❌ Process cancelled by user.")
+        return
+    except Exception as e:
+        print(f"❌ Error getting bearer token: {e}")
+        return
     
     # Ultra-conservative configuration to avoid DDoS detection
-    extractor = PatientDataExtractor(
-        bearer_token=BEARER_TOKEN,
-        requests_per_second=0.8,        # Less than 1 request per second
-        max_retries=3,
-        batch_size=20,                  # Small batches
-        use_human_like_delays=True      # Randomized delays
-    )
+    try:
+        extractor = PatientDataExtractor(
+            bearer_token=bearer_token,
+            requests_per_second=0.8,        # Less than 1 request per second
+            max_retries=3,
+            batch_size=20,                  # Small batches
+            use_human_like_delays=True      # Randomized delays
+        )
+        
+        # Always use sequential processing for maximum safety
+        extractor.process_all_patients('patient_data.csv', use_threading=False)
+        
+        print("\n🎉 Script completed! Check the generated CSV file.")
+        print("📁 Cache files created for recovery:")
+        print("   - customer_ids_cache.json (for reusing customer IDs)")
+        print("   - progress_checkpoint.json (deleted after successful completion)")
+        
+    except Exception as e:
+        print(f"❌ An error occurred during processing: {e}")
+        print("💡 If the error is authentication-related, please check your bearer token.")
     
-    # Always use sequential processing for maximum safety
-    extractor.process_all_patients('patient_data.csv', use_threading=False)
-    
-    print("\n🎉 Script completed! Check the generated CSV file.")
-    print("📁 Cache files created for recovery:")
-    print("   - customer_ids_cache.json (for reusing customer IDs)")
-    print("   - progress_checkpoint.json (deleted after successful completion)")
+    finally:
+        # Clear token from memory for security
+        if 'bearer_token' in locals():
+            bearer_token = None
 
 if __name__ == "__main__":
     main()
 
-# Recovery mode example:
+# Recovery mode instructions:
 """
 If the script gets interrupted, just run it again!
 It will automatically:
-1. Ask if you want to use cached customer IDs
-2. Ask if you want to resume from the last checkpoint
-3. Continue where it left off
+1. Ask for your bearer token again (for security)
+2. Ask if you want to use cached customer IDs
+3. Ask if you want to resume from the last checkpoint
+4. Continue where it left off
 
 This ensures you never lose progress and don't have to re-fetch customer IDs!
-"""
-    
-if __name__ == "__main__":
-    main()
-
-# Recovery mode example:
-# If the script gets interrupted, just run it again!
-# It will automatically:
-# 1. Ask if you want to use cached customer IDs
-# 2. Ask if you want to resume from the last checkpoint
-# 3. Continue where it left off
-
-   
-#     # Configuration options:
-#     # requests_per_second: How many requests per second (default: 2.0 - conservative)
-#     # max_retries: How many times to retry failed requests (default: 3)
-#     # batch_size: For threading mode, how many IDs to process per batch (default: 50)
-    
-#     # Conservative approach (recommended for production)
-#     extractor = PatientDataExtractor(
-#         bearer_token=BEARER_TOKEN,
-#         requests_per_second=1.5,  # Very conservative - 1.5 requests per second
-#         max_retries=3,
-#         batch_size=25
-#     )
-    
-#     # Process all patients sequentially (safest approach)
-#     extractor.process_all_patients('patient_data.csv', use_threading=False)
-    
-#     # Alternative: Faster processing with threading (use only if server can handle it)
-#     # extractor.process_all_patients('patient_data.csv', use_threading=True)
-
-
-if __name__ == "__main__":
-    main()
-
-# Alternative usage example:
-"""
-# You can also use the class directly:
-extractor = PatientDataExtractor("your_bearer_token_here")
-extractor.process_all_patients("my_custom_filename.csv")
 """
