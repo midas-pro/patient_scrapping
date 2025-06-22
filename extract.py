@@ -61,7 +61,7 @@ class PatientDataExtractor:
         url = f"{self.base_url}/v2/getPatientActions"
         payload ={
     "after": "",
-    "limit": 5000,
+    "limit": 6000,
     "types": [
         "NEW_SCANS",
         "ENGAGERS_BOOK_LATE",
@@ -501,7 +501,7 @@ class PatientDataExtractor:
 
 def get_bearer_token(is_retry: bool = False) -> str:
     """
-    Securely prompt for bearer token
+    Securely prompt for bearer token with fallback options
     """
     if is_retry:
         print("🔐 Bearer Token Re-Authentication")
@@ -512,28 +512,61 @@ def get_bearer_token(is_retry: bool = False) -> str:
         print("-" * 40)
         print("Please enter your bearer token for API authentication.")
     
-    print("Note: Your input will be hidden for security.")
-    print()
+    print("\nInput method options:")
+    print("1. Hidden input (secure) - recommended")
+    print("2. Visible input (less secure but works in all terminals)")
     
     while True:
-        # Use getpass for secure input (hides the token)
-        prompt = "Enter New Bearer Token: " if is_retry else "Enter Bearer Token: "
-        token = getpass.getpass(prompt).strip()
-        
-        if not token:
-            print("❌ Bearer token cannot be empty. Please try again.\n")
-            continue
-        
-        # Basic validation - check if it looks like a JWT token
-        if token.count('.') == 2:
-            print("✅ Token format appears valid.")
-            return token
-        else:
-            print("⚠️  Warning: Token doesn't appear to be in JWT format.")
-            confirm = input("Continue anyway? (y/n): ").lower().strip()
-            if confirm in ['y', 'yes']:
+        try:
+            input_choice = input("Choose input method (1 or 2): ").strip()
+            
+            if input_choice == "1":
+                print("\nNote: Your input will be hidden for security.")
+                prompt = "Enter New Bearer Token: " if is_retry else "Enter Bearer Token: "
+                
+                try:
+                    token = getpass.getpass(prompt).strip()
+                except Exception as getpass_error:
+                    print(f"❌ Hidden input failed: {getpass_error}")
+                    print("Falling back to visible input...")
+                    token = input(prompt).strip()
+                    
+            elif input_choice == "2":
+                print("\n⚠️  WARNING: Token will be visible on screen!")
+                confirm_visible = input("Continue with visible input? (y/n): ").lower().strip()
+                if confirm_visible not in ['y', 'yes']:
+                    continue
+                    
+                prompt = "Enter New Bearer Token: " if is_retry else "Enter Bearer Token: "
+                token = input(prompt).strip()
+            else:
+                print("❌ Please choose 1 or 2")
+                continue
+                
+            if not token:
+                print("❌ Bearer token cannot be empty. Please try again.\n")
+                continue
+            
+            # Basic validation - check if it looks like a JWT token
+            if token.count('.') == 2:
+                print("✅ Token format appears valid.")
                 return token
-            print()
+            else:
+                print("⚠️  Warning: Token doesn't appear to be in JWT format.")
+                print(f"Token length: {len(token)} characters")
+                print(f"First 20 chars: {token[:20]}...")
+                confirm = input("Continue anyway? (y/n): ").lower().strip()
+                if confirm in ['y', 'yes']:
+                    return token
+                print()
+                
+        except KeyboardInterrupt:
+            print("\n❌ Input cancelled by user.")
+            raise
+        except Exception as e:
+            print(f"❌ Error during token input: {e}")
+            print("Please try again or use visible input method.")
+            continue
 
 def main():
     print("🎯 SECURE PATIENT DATA EXTRACTOR")
@@ -550,17 +583,23 @@ def main():
     
     # Get bearer token securely
     try:
+        print("🔄 Initializing bearer token input...")
         bearer_token = get_bearer_token()
+        print("✅ Bearer token received successfully!")
+        print(f"📏 Token length: {len(bearer_token)} characters")
         print("\n🚀 Starting extraction process...\n")
     except KeyboardInterrupt:
         print("\n\n❌ Process cancelled by user.")
         return
     except Exception as e:
         print(f"❌ Error getting bearer token: {e}")
+        import traceback
+        traceback.print_exc()
         return
     
     # Ultra-conservative configuration to avoid DDoS detection
     try:
+        print("🔄 Initializing PatientDataExtractor...")
         extractor = PatientDataExtractor(
             bearer_token=bearer_token,
             requests_per_second=0.8,        # Less than 1 request per second
@@ -568,8 +607,10 @@ def main():
             batch_size=20,                  # Small batches
             use_human_like_delays=True      # Randomized delays
         )
+        print("✅ Extractor initialized successfully!")
         
         # Always use sequential processing for maximum safety
+        print("🔄 Starting patient processing...")
         extractor.process_all_patients('patient_data.csv', use_threading=False)
         
         print("\n🎉 Script completed! Check the generated CSV file.")
@@ -580,11 +621,14 @@ def main():
     except Exception as e:
         print(f"❌ An error occurred during processing: {e}")
         print("💡 If the error is authentication-related, please check your bearer token.")
+        import traceback
+        traceback.print_exc()
     
     finally:
         # Clear token from memory for security
         if 'bearer_token' in locals():
             bearer_token = None
+            print("🧹 Cleared bearer token from memory.")
 
 if __name__ == "__main__":
     main()
