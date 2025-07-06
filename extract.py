@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 import random
 import os
 import getpass
+import signal
+import sys
+import atexit
 
 class RateLimiter:
     """Thread-safe rate limiter with randomized delays to appear more human-like"""
@@ -52,6 +55,81 @@ class PatientDataExtractor:
         self.max_retries = max_retries
         self.batch_size = batch_size
         self.customer_ids_cache_file = "customer_ids_cache.json"
+        
+        # Track collected data for emergency CSV creation
+        self.collected_data = []
+        self.output_filename = 'patient_data.csv'
+        
+        # Setup signal handlers for graceful shutdown
+        self.setup_signal_handlers()
+        
+        # Register cleanup function to run on exit
+        atexit.register(self.emergency_csv_creation)
+        
+    def setup_signal_handlers(self):
+        """Setup signal handlers to catch interruptions and create CSV before exit"""
+        def signal_handler(signum, frame):
+            print(f"\n🚨 Received signal {signum}. Creating emergency CSV...")
+            self.emergency_csv_creation()
+            print("🔄 Signal handler complete. Exiting gracefully...")
+            sys.exit(0)
+        
+        # Handle common termination signals
+        signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+        if hasattr(signal, 'SIGBREAK'):
+            signal.signal(signal.SIGBREAK, signal_handler)  # Windows Ctrl+Break
+    
+    def emergency_csv_creation(self):
+        """Create CSV from any collected data - called on emergency exit"""
+        try:
+            # Try to load any existing checkpoint data
+            checkpoint_data = self.load_all_available_data()
+            
+            if checkpoint_data:
+                emergency_filename = f"emergency_patient_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                self.write_to_csv(checkpoint_data, emergency_filename)
+                print(f"🚨 EMERGENCY CSV CREATED: {emergency_filename}")
+                print(f"📊 Saved {len(checkpoint_data)} patient records")
+            elif self.collected_data:
+                emergency_filename = f"emergency_patient_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                self.write_to_csv(self.collected_data, emergency_filename)
+                print(f"🚨 EMERGENCY CSV CREATED: {emergency_filename}")
+                print(f"📊 Saved {len(self.collected_data)} patient records")
+        except Exception as e:
+            print(f"❌ Error creating emergency CSV: {e}")
+    
+    def load_all_available_data(self) -> List[Dict]:
+        """Load all available data from checkpoints and memory"""
+        all_data = []
+        
+        # Add in-memory collected data
+        if self.collected_data:
+            all_data.extend(self.collected_data)
+            print(f"📊 Found {len(self.collected_data)} records in memory")
+        
+        # Try to load from checkpoint
+        try:
+            checkpoint_file = "progress_checkpoint.json"
+            if os.path.exists(checkpoint_file):
+                with open(checkpoint_file, 'r') as f:
+                    checkpoint_data = json.load(f)
+                
+                checkpoint_customers = checkpoint_data.get('processed_customers', [])
+                
+                # Merge data, avoiding duplicates based on customerId
+                existing_ids = {item.get('customerId') for item in all_data if 'customerId' in item}
+                
+                for customer in checkpoint_customers:
+                    if customer.get('customerId') not in existing_ids:
+                        all_data.append(customer)
+                
+                print(f"📊 Loaded {len(checkpoint_customers)} records from checkpoint")
+        except Exception as e:
+            print(f"⚠️ Could not load checkpoint data: {e}")
+        
+        return all_data
         
     def get_patient_actions(self) -> List[Dict]:
         """
@@ -242,7 +320,7 @@ class PatientDataExtractor:
             return None
     
     def save_progress_checkpoint(self, processed_customers: List[Dict], filename: str = "progress_checkpoint.json"):
-        """Save progress checkpoint to resume if interrupted"""
+        """Save progress checkpoint to resume if interrupted AND create CSV backup"""
         checkpoint_data = {
             'processed_customers': processed_customers,
             'timestamp': datetime.now().isoformat(),
@@ -250,9 +328,17 @@ class PatientDataExtractor:
         }
         
         try:
+            # Save JSON checkpoint
             with open(filename, 'w') as f:
                 json.dump(checkpoint_data, f, indent=2)
             print(f"💾 Checkpoint saved: {len(processed_customers)} customers processed")
+            
+            # ALWAYS create/update CSV backup when checkpoint is saved
+            if processed_customers:
+                backup_csv_filename = f"backup_{self.output_filename}"
+                self.write_to_csv(processed_customers, backup_csv_filename)
+                print(f"📄 Backup CSV updated: {backup_csv_filename}")
+                
         except Exception as e:
             print(f"⚠️ Failed to save checkpoint: {e}")
     
@@ -319,6 +405,8 @@ class PatientDataExtractor:
             if patient_data:
                 extracted_info = self.extract_patient_info(patient_data)
                 batch_results.append(extracted_info)
+                # Add to in-memory collection for emergency scenarios
+                self.collected_data.append(extracted_info)
         
         return batch_results
 
@@ -326,77 +414,92 @@ class PatientDataExtractor:
         """
         Main function to process all patients and create CSV with intelligent caching and recovery
         """
+        self.output_filename = output_filename  # Store for emergency use
+        
         print("🚀 Starting Patient Data Extraction Process")
         print("=" * 60)
         
-        # Step 0: Try to load existing progress
-        processed_customers = self.load_progress_checkpoint()
-        processed_customer_ids = {customer['customerId'] for customer in processed_customers}
-        
-        # Step 1: Get customer IDs (try cache first, then API)
-        customer_ids = self.load_customer_ids_from_cache()
-        
-        if not customer_ids:
-            print("\n📡 Fetching patient actions from API...")
-            patient_actions = self.get_patient_actions()
+        try:
+            # Step 0: Try to load existing progress
+            processed_customers = self.load_progress_checkpoint()
+            processed_customer_ids = {customer['customerId'] for customer in processed_customers}
             
-            if not patient_actions:
-                print("❌ No patient actions found. Exiting.")
+            # Add processed customers to collected_data for emergency scenarios
+            self.collected_data.extend(processed_customers)
+            
+            # Step 1: Get customer IDs (try cache first, then API)
+            customer_ids = self.load_customer_ids_from_cache()
+            
+            if not customer_ids:
+                print("\n📡 Fetching patient actions from API...")
+                patient_actions = self.get_patient_actions()
+                
+                if not patient_actions:
+                    print("❌ No patient actions found. Exiting.")
+                    return
+                
+                # Extract unique customer IDs and save to cache
+                customer_ids = list(set(
+                    action['customerId'] for action in patient_actions 
+                    if 'customerId' in action
+                ))
+                
+                # Save customer IDs to cache for future use
+                self.save_customer_ids_to_cache(customer_ids)
+            
+            print(f"\n📊 Total unique customer IDs: {len(customer_ids)}")
+            
+            # Filter out already processed customers
+            remaining_customer_ids = [cid for cid in customer_ids if cid not in processed_customer_ids]
+            
+            if processed_customers:
+                print(f"✅ Already processed: {len(processed_customers)} customers")
+                print(f"⏳ Remaining to process: {len(remaining_customer_ids)} customers")
+            
+            if not remaining_customer_ids:
+                print("🎉 All customers already processed!")
+                if processed_customers:
+                    self.write_to_csv(processed_customers, output_filename)
+                    print(f"📄 CSV file updated: {output_filename}")
                 return
             
-            # Extract unique customer IDs and save to cache
-            customer_ids = list(set(
-                action['customerId'] for action in patient_actions 
-                if 'customerId' in action
-            ))
+            print(f"\n🔄 Processing mode: {'Multi-threaded' if use_threading else 'Sequential (Safer)'}")
+            print(f"⚡ Rate limit: {self.rate_limiter.max_requests_per_second} requests/second")
+            print(f"🔄 Max retries: {self.max_retries}")
+            print("\n" + "=" * 60)
             
-            # Save customer IDs to cache for future use
-            self.save_customer_ids_to_cache(customer_ids)
-        
-        print(f"\n📊 Total unique customer IDs: {len(customer_ids)}")
-        
-        # Filter out already processed customers
-        remaining_customer_ids = [cid for cid in customer_ids if cid not in processed_customer_ids]
-        
-        if processed_customers:
-            print(f"✅ Already processed: {len(processed_customers)} customers")
-            print(f"⏳ Remaining to process: {len(remaining_customer_ids)} customers")
-        
-        if not remaining_customer_ids:
-            print("🎉 All customers already processed!")
-            if processed_customers:
-                self.write_to_csv(processed_customers, output_filename)
-                print(f"📄 CSV file updated: {output_filename}")
-            return
-        
-        print(f"\n🔄 Processing mode: {'Multi-threaded' if use_threading else 'Sequential (Safer)'}")
-        print(f"⚡ Rate limit: {self.rate_limiter.max_requests_per_second} requests/second")
-        print(f"🔄 Max retries: {self.max_retries}")
-        print("\n" + "=" * 60)
-        
-        # Step 2: Process remaining patients
-        if use_threading and len(remaining_customer_ids) > 20:
-            new_patient_details = self._process_with_threading(remaining_customer_ids, processed_customers)
-        else:
-            new_patient_details = self._process_sequentially(remaining_customer_ids, processed_customers)
-        
-        # Step 3: Combine all results
-        all_patient_details = processed_customers + new_patient_details
-        
-        # Step 4: Write final CSV
-        if all_patient_details:
-            self.write_to_csv(all_patient_details, output_filename)
-            print(f"\n🎉 SUCCESS! Exported {len(all_patient_details)} patient records to {output_filename}")
+            # Step 2: Process remaining patients
+            if use_threading and len(remaining_customer_ids) > 20:
+                new_patient_details = self._process_with_threading(remaining_customer_ids, processed_customers)
+            else:
+                new_patient_details = self._process_sequentially(remaining_customer_ids, processed_customers)
             
-            # Clean up checkpoint file
-            try:
-                if os.path.exists("progress_checkpoint.json"):
-                    os.remove("progress_checkpoint.json")
-                    print("🧹 Cleaned up checkpoint file")
-            except:
-                pass
-        else:
-            print("❌ No patient details were successfully fetched.")
+            # Step 3: Combine all results
+            all_patient_details = processed_customers + new_patient_details
+            
+            # Step 4: Write final CSV
+            if all_patient_details:
+                self.write_to_csv(all_patient_details, output_filename)
+                print(f"\n🎉 SUCCESS! Exported {len(all_patient_details)} patient records to {output_filename}")
+                
+                # Clean up checkpoint file
+                try:
+                    if os.path.exists("progress_checkpoint.json"):
+                        os.remove("progress_checkpoint.json")
+                        print("🧹 Cleaned up checkpoint file")
+                except:
+                    pass
+            else:
+                print("❌ No patient details were successfully fetched.")
+                
+        except KeyboardInterrupt:
+            print("\n🚨 Process interrupted by user (Ctrl+C)")
+            self.emergency_csv_creation()
+            raise
+        except Exception as e:
+            print(f"\n❌ Unexpected error occurred: {e}")
+            self.emergency_csv_creation()
+            raise
     
     def _process_sequentially(self, customer_ids: List[int], existing_customers: List[Dict] = None) -> List[Dict]:
         """Process customer IDs one by one with anti-DDoS measures"""
@@ -410,38 +513,49 @@ class PatientDataExtractor:
         print(f"\n🐌 Sequential Processing Started")
         print(f"📈 Will save checkpoint every {checkpoint_interval} customers")
         
-        for i, customer_id in enumerate(customer_ids, 1):
-            print(f"🔄 Processing customer {i}/{total_customers}: ID {customer_id}")
+        try:
+            for i, customer_id in enumerate(customer_ids, 1):
+                print(f"🔄 Processing customer {i}/{total_customers}: ID {customer_id}")
+                
+                # Add random delay every few requests to appear more human-like
+                if i % 10 == 0:
+                    extra_delay = random.uniform(2, 5)
+                    print(f"😴 Taking a short break ({extra_delay:.1f}s) to be nice to the server...")
+                    time.sleep(extra_delay)
+                
+                patient_data = self.get_patient_details(customer_id)
+                
+                if patient_data:
+                    extracted_info = self.extract_patient_info(patient_data)
+                    patient_details.append(extracted_info)
+                    # Add to in-memory collection for emergency scenarios
+                    self.collected_data.append(extracted_info)
+                    print(f"   ✅ Success: {extracted_info.get('firstName', '')} {extracted_info.get('lastName', '')}")
+                else:
+                    print(f"   ❌ Failed to get details for ID {customer_id}")
+                
+                # Save checkpoint periodically
+                if i % checkpoint_interval == 0:
+                    all_processed = existing_customers + patient_details
+                    self.save_progress_checkpoint(all_processed)
+                    print(f"💾 Checkpoint saved at {i}/{total_customers}")
+                
+                # Progress update
+                if i % 10 == 0:
+                    success_rate = (len(patient_details) / i) * 100
+                    print(f"📊 Progress: {i}/{total_customers} ({(i/total_customers)*100:.1f}%) | Success rate: {success_rate:.1f}%")
             
-            # Add random delay every few requests to appear more human-like
-            if i % 10 == 0:
-                extra_delay = random.uniform(2, 5)
-                print(f"😴 Taking a short break ({extra_delay:.1f}s) to be nice to the server...")
-                time.sleep(extra_delay)
+            # Final checkpoint
+            all_processed = existing_customers + patient_details
+            self.save_progress_checkpoint(all_processed)
             
-            patient_data = self.get_patient_details(customer_id)
-            
-            if patient_data:
-                extracted_info = self.extract_patient_info(patient_data)
-                patient_details.append(extracted_info)
-                print(f"   ✅ Success: {extracted_info.get('firstName', '')} {extracted_info.get('lastName', '')}")
-            else:
-                print(f"   ❌ Failed to get details for ID {customer_id}")
-            
-            # Save checkpoint periodically
-            if i % checkpoint_interval == 0:
-                all_processed = existing_customers + patient_details
+        except Exception as e:
+            print(f"❌ Error during sequential processing: {e}")
+            # Create emergency CSV with current progress
+            all_processed = existing_customers + patient_details
+            if all_processed:
                 self.save_progress_checkpoint(all_processed)
-                print(f"💾 Checkpoint saved at {i}/{total_customers}")
-            
-            # Progress update
-            if i % 10 == 0:
-                success_rate = (len(patient_details) / i) * 100
-                print(f"📊 Progress: {i}/{total_customers} ({(i/total_customers)*100:.1f}%) | Success rate: {success_rate:.1f}%")
-        
-        # Final checkpoint
-        all_processed = existing_customers + patient_details
-        self.save_progress_checkpoint(all_processed)
+            raise
         
         return patient_details
     
@@ -453,33 +567,41 @@ class PatientDataExtractor:
         print("🚀 Multi-threaded Processing Started (Conservative Mode)")
         patient_details = []
         
-        # Split customer IDs into batches
-        batches = [customer_ids[i:i + self.batch_size] for i in range(0, len(customer_ids), self.batch_size)]
-        
-        # Use only 2 threads to be extra conservative
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_batch = {
-                executor.submit(self.process_patient_batch, batch): batch 
-                for batch in batches
-            }
+        try:
+            # Split customer IDs into batches
+            batches = [customer_ids[i:i + self.batch_size] for i in range(0, len(customer_ids), self.batch_size)]
             
-            completed = 0
-            for future in as_completed(future_to_batch):
-                batch_results = future.result()
-                patient_details.extend(batch_results)
-                completed += len(future_to_batch[future])
+            # Use only 2 threads to be extra conservative
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_to_batch = {
+                    executor.submit(self.process_patient_batch, batch): batch 
+                    for batch in batches
+                }
                 
-                # Save checkpoint after each batch
-                all_processed = existing_customers + patient_details
+                completed = 0
+                for future in as_completed(future_to_batch):
+                    batch_results = future.result()
+                    patient_details.extend(batch_results)
+                    completed += len(future_to_batch[future])
+                    
+                    # Save checkpoint after each batch
+                    all_processed = existing_customers + patient_details
+                    self.save_progress_checkpoint(all_processed)
+                    
+                    print(f"📊 Progress: {completed}/{len(customer_ids)} ({(completed/len(customer_ids))*100:.1f}%)")
+                    
+                    # Add delay between batches
+                    if completed < len(customer_ids):
+                        batch_delay = random.uniform(3, 7)
+                        print(f"😴 Batch completed. Waiting {batch_delay:.1f}s before next batch...")
+                        time.sleep(batch_delay)
+        except Exception as e:
+            print(f"❌ Error during threaded processing: {e}")
+            # Create emergency CSV with current progress
+            all_processed = existing_customers + patient_details
+            if all_processed:
                 self.save_progress_checkpoint(all_processed)
-                
-                print(f"📊 Progress: {completed}/{len(customer_ids)} ({(completed/len(customer_ids))*100:.1f}%)")
-                
-                # Add delay between batches
-                if completed < len(customer_ids):
-                    batch_delay = random.uniform(3, 7)
-                    print(f"😴 Batch completed. Waiting {batch_delay:.1f}s before next batch...")
-                    time.sleep(batch_delay)
+            raise
       
         return patient_details
     
@@ -494,10 +616,14 @@ class PatientDataExtractor:
         
         fieldnames = ['customerId', 'email', 'phone', 'firstName', 'lastName', 'fullName', 'country', 'language']
         
-        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(patient_data)
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(patient_data)
+            print(f"✅ CSV file created/updated: {filename}")
+        except Exception as e:
+            print(f"❌ Error writing CSV file {filename}: {e}")
 
 def get_bearer_token(is_retry: bool = False) -> str:
     """
@@ -578,6 +704,7 @@ def main():
     print("✅ Automatic progress checkpoints")
     print("✅ Resume capability if interrupted")
     print("✅ Ultra-conservative rate limiting")
+    print("🚨 NEW: Auto-creates CSV on ANY interruption/error")
     print("=" * 50)
     print()
     
@@ -616,11 +743,15 @@ def main():
         print("\n🎉 Script completed! Check the generated CSV file.")
         print("📁 Cache files created for recovery:")
         print("   - customer_ids_cache.json (for reusing customer IDs)")
+        print("   - backup_patient_data.csv (backup CSV updated during processing)")
         print("   - progress_checkpoint.json (deleted after successful completion)")
         
+    except KeyboardInterrupt:
+        print("\n🚨 Script interrupted by user. CSV should be created automatically.")
     except Exception as e:
-        print(f"❌ An error occurred during processing: {e}")
+        print(f"\n❌ An error occurred during processing: {e}")
         print("💡 If the error is authentication-related, please check your bearer token.")
+        print("🚨 Emergency CSV should be created automatically.")
         import traceback
         traceback.print_exc()
     
@@ -641,6 +772,12 @@ It will automatically:
 2. Ask if you want to use cached customer IDs
 3. Ask if you want to resume from the last checkpoint
 4. Continue where it left off
+
+EMERGENCY CSV FEATURES:
+- CSV is auto-created on ANY interruption (Ctrl+C, errors, crashes)
+- backup_patient_data.csv is updated at every checkpoint
+- Emergency CSV includes timestamp in filename
+- All collected data is preserved even if script crashes
 
 This ensures you never lose progress and don't have to re-fetch customer IDs!
 """
